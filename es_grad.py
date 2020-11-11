@@ -1,5 +1,6 @@
 from copy import deepcopy
 import argparse
+import ray
 
 import torch.nn as nn
 import torch.nn.functional as F
@@ -232,6 +233,7 @@ class CriticTD3(RLNN):
                 self.tau * param.data + (1 - self.tau) * target_param.data)
 
 
+@ray.remote(num_cpus=1)
 class CEMRLWorker:
     def __init__(self, env, actor: Actor, critic: Union[Critic, CriticTD3]):
         self._env = env
@@ -371,6 +373,9 @@ if __name__ == "__main__":
         for key, value in vars(args).items():
             file.write("{} = {}\n".format(key, value))
 
+    # start ray
+    ray.init()
+
     # environment
     env = gym.make(args.env)
     state_dim = env.observation_space.shape[0]
@@ -396,7 +401,7 @@ if __name__ == "__main__":
     actor_t = Actor(state_dim, action_dim, max_action, args)
     actor_t.load_state_dict(actor.state_dict())
 
-    cemrl_worker = CEMRLWorker(env, actor, critic)
+    workers = [CEMRLWorker.remote(env, actor, critic) for _ in range(args.pop_size)]
 
     # action noise
     if not args.ou_noise:
@@ -452,37 +457,37 @@ if __name__ == "__main__":
                 critic.update(batch, args.batch_size, actor, critic_t)
 
             critic_params = critic.get_params()
-            for i in range(args.n_grad):
-
-                # set params
-                actor.set_params(es_params[i])
-                actor_t.set_params(es_params[i])
-                actor.optimizer = torch.optim.Adam(actor.parameters(), lr=args.actor_lr)
-
-                # actor update
-                params = es_params[i]
-                batches = [memory.sample(batch_size=args.batch_size) for _ in range(actor_steps)]
-
-                params = cemrl_worker.update(
-                        batches,
-                        params,
+            batches_list = [
+                [memory.sample(args.batch_size) for _ in range(actor_steps)]
+                for _ in range(args.n_grad)
+            ]
+            es_params = ray.get(
+                [
+                    workers[i].update.remote(
+                        batches_list[i],
+                        es_params[i],
                         critic_params,
                         args.actor_lr
-                )
-
-                # get the params back in the population
-                es_params[i] = params
+                    )
+                    for i in range(args.n_grad)
+                ]
+            )
 
         actor_steps = 0
 
         # evaluate noisy actor(s)
-        for i in range(args.n_noisy):
-            actor.set_params(es_params[i])
-            f, steps, transitions = cemrl_worker.evaluate(
-                actor.get_params(),
-                n_episodes=args.n_episodes,
-                noise=a_noise
-            )
+        outs = ray.get(
+            [
+                workers[i].evaluate.remote(
+                    es_params[i],
+                    n_episodes=args.n_episodes,
+                    noise=a_noise
+                )
+                for i in range(args.n_noisy)
+            ]
+        )
+
+        for f, steps, transitions in outs:
 
             for transition in transitions:
                 memory.add(transition)
@@ -491,12 +496,14 @@ if __name__ == "__main__":
             prCyan('Noisy actor {} fitness:{}'.format(i, f))
 
         # evaluate all actors
-        for params in es_params:
+        outs = ray.get(
+            [
+                workers[i].evaluate.remote(params, n_episodes=args.n_episodes)
+                for i, params in enumerate(es_params)
+            ]
+        )
 
-            f, steps, transitions = cemrl_worker.evaluate(
-                params,
-                n_episodes=args.n_episodes,
-            )
+        for f, steps, transitions in outs:
 
             for transition in transitions:
                 memory.add(transition)
@@ -519,11 +526,10 @@ if __name__ == "__main__":
 
             # evaluate mean actor over several runs. Memory is not filled
             # and steps are not counted
-            actor.set_params(es.mu)
-            f_mu, _, _ = cemrl_worker.evaluate(
+            f_mu, _, _ = ray.get([workers[0].evaluate.remote(
                 es.mu,
-                n_episodes=args.n_eval,
-            )
+                n_episodes=args.n_eval
+            )])[0]
 
             prRed('Actor Mu Average Fitness:{}'.format(f_mu))
 
@@ -542,17 +548,26 @@ if __name__ == "__main__":
             }
 
             if args.save_all_models:
-                os.makedirs(args.output + "/{}_steps".format(total_steps),
-                            exist_ok=True)
+                os.makedirs(
+                    args.output + "/{}_steps".format(total_steps),
+                    exist_ok=True
+                )
+
                 critic.save_model(
-                    args.output + "/{}_steps".format(total_steps), "critic")
+                    args.output + "/{}_steps".format(total_steps),
+                    "critic"
+                )
+
                 actor.set_params(es.mu)
                 actor.save_model(
-                    args.output + "/{}_steps".format(total_steps), "actor_mu")
+                    args.output + "/{}_steps".format(total_steps),
+                    "actor_mu"
+                )
             else:
                 critic.save_model(args.output, "critic")
                 actor.set_params(es.mu)
                 actor.save_model(args.output, "actor")
+
             df = df.append(res, ignore_index=True)
             step_cpt = 0
             print(res)
