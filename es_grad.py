@@ -6,6 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pandas as pd
 
+from register_envs import register_envs
+
 import gym.spaces
 from tqdm import tqdm
 
@@ -307,6 +309,8 @@ class CEMRLWorker:
 
 
 if __name__ == "__main__":
+
+    register_envs()
 
     parser = argparse.ArgumentParser()
 
