@@ -374,7 +374,7 @@ if __name__ == "__main__":
             file.write("{} = {}\n".format(key, value))
 
     # start ray
-    ray.init()
+    ray.init(num_cpus=args.pop_size + 1)
 
     # environment
     env = gym.make(args.env)
@@ -461,7 +461,7 @@ if __name__ == "__main__":
                 [memory.sample(args.batch_size) for _ in range(actor_steps)]
                 for _ in range(args.n_grad)
             ]
-            es_params = ray.get(
+            updated_es_params = ray.get(
                 [
                     workers[i].update.remote(
                         batches_list[i],
@@ -472,6 +472,8 @@ if __name__ == "__main__":
                     for i in range(args.n_grad)
                 ]
             )
+            for i in range(args.n_grad):
+                es_params[i] = updated_es_params[i]
 
         actor_steps = 0
 
