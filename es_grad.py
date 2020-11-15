@@ -294,7 +294,7 @@ class CEMRLWorker:
 
             scores.append(score)
 
-        return np.mean(scores), steps, transitions
+        return np.mean(scores), steps, transitions, reward
 
     def update(self, batches, actor_params, critic_params, lr):
         self._actor.set_params(actor_params)
@@ -443,13 +443,16 @@ if __name__ == "__main__":
         "average_score",
         "average_score_rl",
         "average_score_ea",
-        "best_score"
+        "best_score",
+        "mu_score",
+        "distance_to_goal"
     ])
 
     while total_steps < args.max_steps:
 
         fitness = []
         fitness_ = []
+        last_rewards = []
         es_params = es.ask(args.pop_size)
 
         # udpate the rl actors and the critic
@@ -493,7 +496,7 @@ if __name__ == "__main__":
             ]
         )
 
-        for f, steps, transitions in outs:
+        for f, steps, transitions, last_reward in outs:
 
             for transition in transitions:
                 memory.add(transition)
@@ -509,13 +512,14 @@ if __name__ == "__main__":
             ]
         )
 
-        for f, steps, transitions in outs:
+        for f, steps, transitions, last_reward in outs:
 
             for transition in transitions:
                 memory.add(transition)
 
             actor_steps += steps
             fitness.append(f)
+            last_rewards.append(last_reward)
 
             # print scores
             prLightPurple('Actor fitness:{}'.format(f))
@@ -532,7 +536,7 @@ if __name__ == "__main__":
 
             # evaluate mean actor over several runs. Memory is not filled
             # and steps are not counted
-            f_mu, _, _ = ray.get([workers[0].evaluate.remote(
+            f_mu, _, _, _ = ray.get([workers[0].evaluate.remote(
                 es.mu,
                 n_episodes=args.n_eval
             )])[0]
@@ -550,8 +554,12 @@ if __name__ == "__main__":
                 "average_score_rl": np.mean(fitness[:args.n_grad]),
                 "average_score_ea": np.mean(fitness[args.n_grad:]),
                 "best_score": np.max(fitness),
-                "mu_score": f_mu
+                "mu_score": f_mu,
+                "distance_to_goal": np.max(last_rewards)
             }
+            # prLightPurple('last_reward:{}'.format(last_rewards))
+            # prLightPurple('fitness:{}'.format(fitness))
+
 
             if args.save_all_models:
                 os.makedirs(
