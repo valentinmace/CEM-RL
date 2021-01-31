@@ -19,3 +19,8 @@ def register_envs():
         id="PointMazeInertiaMujoco-v0",
         entry_point="environments.point_maze_mujoco.point_maze_inertia_mujoco:PointMazeInertiaMujoco"
     )
+
+    gym.envs.registration.register(
+        id="PointMaze-v0",
+        entry_point="environments.point_maze.point_maze:PointMaze"
+    )
